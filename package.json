@@ -1,0 +1,11 @@
+{
+  "name": "aprova-sedes",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Plataforma gratuita de preparação para o concurso SEDES/DF",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check server.mjs && node --check public/app.js"
+  }
+}

@@ -1,0 +1,7 @@
+data/database.json
+*.log
+qa-*.png
+.env
+.DS_Store
+node_modules/
+
