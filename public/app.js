@@ -2,6 +2,11 @@ import {
   EDITAL_URL, QUADRIX_URL, roles, commonSubjects, specificSubjects, makeQuestionSet,
   initialTasks, reviews, flashcards, achievements
 } from './data.js';
+import {
+  deleteCloudAccount, getCloudSession, hasCloudBackend, isGoogleCloudEnabled, loadCloudData,
+  onCloudAuthStateChange, recordCloudAnswer, saveCloudData, sendPasswordResetCloud,
+  signInCloud, signInGoogleCloud, signOutCloud, signUpCloud, updatePasswordCloud
+} from './supabase-client.js';
 
 const app = document.querySelector('#app');
 const toastRegion = document.querySelector('#toast-region');
@@ -108,12 +113,42 @@ const state = {
   chat: readLocal('aprova_chat', [{ from: 'ai', text: 'Olá, Mariana! Analisei seu plano e seu desempenho recente. Você tem 1h50 de estudo previsto hoje. Posso explicar uma questão, reorganizar sua semana ou indicar sua prioridade agora.' }]),
   modal: null,
   routeAfterAuth: null,
-  examTimer: null
+  examTimer: null,
+  passwordRecovery: false
 };
+
+let cloudSyncEnabled = false;
+let cloudSyncTimer = null;
+let activeCloudUserId = null;
 
 document.body.classList.toggle('dark', state.dark);
 
-function saveState() {
+function cloudSnapshot() {
+  return {
+    tasks: state.tasks,
+    stats: state.stats,
+    favorites: state.practiceFavorites,
+    chat: state.chat,
+    exam: state.exam,
+    lastResult: state.lastResult,
+    onboarding: state.onboarding
+  };
+}
+
+function scheduleCloudSync() {
+  if (!cloudSyncEnabled || !activeCloudUserId || state.auth?.provider !== 'supabase') return;
+  clearTimeout(cloudSyncTimer);
+  cloudSyncTimer = setTimeout(async () => {
+    try {
+      await saveCloudData(activeCloudUserId, cloudSnapshot(), { name: state.user.name, ...state.user.profile });
+    } catch (error) {
+      console.error('Falha ao sincronizar o progresso.', error);
+      toast('Seu progresso ficou salvo neste dispositivo e será sincronizado quando a conexão voltar.', 'error');
+    }
+  }, 700);
+}
+
+function saveState({ syncCloud = true } = {}) {
   localStorage.setItem('aprova_user', JSON.stringify(state.user));
   localStorage.setItem('aprova_tasks', JSON.stringify(state.tasks));
   localStorage.setItem('aprova_stats', JSON.stringify(state.stats));
@@ -123,6 +158,7 @@ function saveState() {
   if (state.auth) localStorage.setItem('aprova_auth', JSON.stringify(state.auth)); else localStorage.removeItem('aprova_auth');
   if (state.exam) localStorage.setItem('aprova_exam', JSON.stringify(state.exam)); else localStorage.removeItem('aprova_exam');
   if (state.lastResult) localStorage.setItem('aprova_result', JSON.stringify(state.lastResult));
+  if (syncCloud) scheduleCloudSync();
 }
 
 function toast(message, type = 'success') {
@@ -231,11 +267,11 @@ function authPage(mode = 'login') {
       <form id="auth-form" data-mode="${mode}">
         ${isRegister ? `<div class="form-group"><label for="name">Nome completo</label><div class="input-wrap">${icon('user','icon-sm')}<input class="input" id="name" name="name" autocomplete="name" required placeholder="Como podemos chamar você?"></div></div>` : ''}
         <div class="form-group"><label for="email">E-mail</label><div class="input-wrap">${icon('mail','icon-sm')}<input class="input" id="email" name="email" type="email" autocomplete="email" required placeholder="voce@exemplo.com"></div></div>
-        <div class="form-group"><label for="password">Senha</label><div class="input-wrap">${icon('lock','icon-sm')}<input class="input" id="password" name="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" minlength="6" required placeholder="${isRegister ? 'Mínimo de 6 caracteres' : 'Digite sua senha'}"></div></div>
-        ${isRegister ? `<label class="checkbox" style="margin:-3px 0 21px"><input type="checkbox" required> Li e concordo com os Termos e a Política de Privacidade.</label>` : `<div class="check-row"><label class="checkbox"><input type="checkbox" name="remember" checked> Permanecer conectado</label><a class="text-link" href="#/recuperar-senha">Esqueci a senha</a></div>`}
+        <div class="form-group"><label for="password">Senha</label><div class="input-wrap">${icon('lock','icon-sm')}<input class="input" id="password" name="password" type="password" autocomplete="${isRegister ? 'new-password' : 'current-password'}" minlength="8" required placeholder="${isRegister ? 'Mínimo de 8 caracteres' : 'Digite sua senha'}"></div></div>
+        ${isRegister ? `<label class="checkbox" style="margin:-3px 0 21px"><input type="checkbox" name="consent" value="accepted" required> Li e concordo com os Termos e a Política de Privacidade.</label>` : `<div class="check-row"><label class="checkbox"><input type="checkbox" name="remember" checked> Permanecer conectado</label><a class="text-link" href="#/recuperar-senha">Esqueci a senha</a></div>`}
         <div id="auth-error"></div><button class="btn btn-primary btn-lg" type="submit">${isRegister ? 'Criar minha conta' : 'Entrar na minha conta'} ${icon('arrowRight','icon-sm')}</button>
       </form>
-      <div class="divider">ou continue com</div><button class="btn btn-outline btn-lg google-btn" data-action="google-login"><span class="google-logo">G</span> Google</button>
+      <div class="divider">ou continue com</div><button class="btn btn-outline btn-lg google-btn" data-action="google-login" ${isGoogleCloudEnabled()?'':'disabled aria-disabled="true"'}><span class="google-logo">G</span> ${isGoogleCloudEnabled()?'Google':'Google — em configuração'}</button>
       <button class="btn btn-ghost" style="width:100%;margin-top:10px" data-action="demo-login">Explorar com dados demonstrativos</button>
       <div class="auth-switch">${isRegister ? 'Já tem uma conta? <a href="#/login">Entrar</a>' : 'Ainda não tem conta? <a href="#/cadastro">Criar conta grátis</a>'}</div>
     </div></section>
@@ -243,7 +279,10 @@ function authPage(mode = 'login') {
 }
 
 function recoverPage() {
-  return `<main id="main" class="auth-layout"><section class="auth-visual"><div>${logo()}</div><div class="auth-message"><span class="badge badge-dark">${icon('lock','icon-sm')} Acesso seguro</span><h1>Recupere seu acesso.</h1><p>Enviaremos as instruções para redefinição da senha ao e-mail cadastrado.</p></div><div></div></section><section class="auth-main"><div class="auth-card"><a class="auth-back" href="#/login">${icon('arrowLeft','icon-sm')} Voltar para o login</a><h2>Esqueceu sua senha?</h2><p>Digite seu e-mail para receber o link de recuperação.</p><form id="recover-form"><div class="form-group"><label for="email">E-mail</label><div class="input-wrap">${icon('mail','icon-sm')}<input class="input" id="email" name="email" type="email" required placeholder="voce@exemplo.com"></div></div><button class="btn btn-primary btn-lg" type="submit">Enviar instruções</button></form></div></section></main>`;
+  const form = state.passwordRecovery
+    ? `<h2>Crie uma nova senha</h2><p>Use pelo menos 8 caracteres.</p><form id="reset-password-form"><div class="form-group"><label for="new-password">Nova senha</label><div class="input-wrap">${icon('lock','icon-sm')}<input class="input" id="new-password" name="password" type="password" minlength="8" autocomplete="new-password" required placeholder="Mínimo de 8 caracteres"></div></div><div id="auth-error"></div><button class="btn btn-primary btn-lg" type="submit">Salvar nova senha</button></form>`
+    : `<h2>Esqueceu sua senha?</h2><p>Digite seu e-mail para receber o link de recuperação.</p><form id="recover-form"><div class="form-group"><label for="email">E-mail</label><div class="input-wrap">${icon('mail','icon-sm')}<input class="input" id="email" name="email" type="email" required placeholder="voce@exemplo.com"></div></div><div id="auth-error"></div><button class="btn btn-primary btn-lg" type="submit">Enviar instruções</button></form>`;
+  return `<main id="main" class="auth-layout"><section class="auth-visual"><div>${logo()}</div><div class="auth-message"><span class="badge badge-dark">${icon('lock','icon-sm')} Acesso seguro</span><h1>Recupere seu acesso.</h1><p>Proteja sua conta com uma senha forte e exclusiva.</p></div><div></div></section><section class="auth-main"><div class="auth-card"><a class="auth-back" href="#/login">${icon('arrowLeft','icon-sm')} Voltar para o login</a>${form}</div></section></main>`;
 }
 
 const navSections = [
@@ -542,19 +581,148 @@ async function submitAuth(form) {
   const error = document.querySelector('#auth-error');
   button.disabled = true; button.innerHTML = `<span class="spinner" style="width:20px;height:20px;border-width:2px"></span> Aguarde…`;
   try {
-    const result = await api(`/api/auth/${mode==='cadastro'?'register':'login'}`, { method:'POST', body:JSON.stringify(data) });
-    state.auth = { token:result.token };
-    state.user = { ...defaultUser, ...result.user, profile:{...defaultUser.profile,...result.user.profile} };
-    saveState();
-    toast(mode==='cadastro'?'Conta criada com sucesso!':'Bem-vindo de volta!');
-    navigate(mode==='cadastro'?'onboarding':(state.routeAfterAuth || 'dashboard'));
+    if (hasCloudBackend()) {
+      if (mode === 'cadastro') {
+        const result = await signUpCloud(data);
+        if (!result.session) {
+          toast('Conta criada. Confira seu e-mail para confirmar o cadastro.');
+          navigate('login');
+          return;
+        }
+        await applyCloudSession(result.session);
+        toast('Conta criada com sucesso!');
+        navigate('onboarding');
+      } else {
+        const result = await signInCloud(data);
+        await applyCloudSession(result.session);
+        toast('Bem-vindo de volta!');
+        navigate(state.routeAfterAuth || 'dashboard');
+      }
+    } else if (['localhost', '127.0.0.1'].includes(location.hostname)) {
+      const result = await api(`/api/auth/${mode==='cadastro'?'register':'login'}`, { method:'POST', body:JSON.stringify(data) });
+      state.auth = { token:result.token, provider:'local' };
+      state.user = { ...defaultUser, ...result.user, profile:{...defaultUser.profile,...result.user.profile} };
+      saveState({ syncCloud:false });
+      toast(mode==='cadastro'?'Conta local criada com sucesso!':'Bem-vindo de volta!');
+      navigate(mode==='cadastro'?'onboarding':(state.routeAfterAuth || 'dashboard'));
+    } else {
+      throw new Error('O cadastro online ainda não foi ativado. Use “Explorar com dados demonstrativos” por enquanto.');
+    }
   } catch (err) {
-    error.innerHTML = `<div class="form-error">${escapeHtml(err.message)} Se preferir, use “Explorar com dados demonstrativos”.</div>`;
+    error.innerHTML = `<div class="form-error">${escapeHtml(err.message)}</div>`;
     button.disabled = false; button.innerHTML = `${mode==='cadastro'?'Criar minha conta':'Entrar na minha conta'} ${icon('arrowRight','icon-sm')}`;
   }
 }
 
+function cloudProfile(row = {}) {
+  return {
+    selectedRole: row.selected_role || defaultUser.profile.selectedRole,
+    examDate: row.exam_date || defaultUser.profile.examDate,
+    daysPerWeek: row.days_per_week || defaultUser.profile.daysPerWeek,
+    hoursPerDay: Number(row.hours_per_day) || defaultUser.profile.hoursPerDay,
+    level: row.current_level || defaultUser.profile.level,
+    difficulties: Array.isArray(row.difficulties) ? row.difficulties : [],
+    weeklyGoal: row.weekly_question_goal || defaultUser.profile.weeklyGoal,
+    preferredTime: row.preferred_study_time || defaultUser.profile.preferredTime
+  };
+}
+
+async function applyCloudSession(session) {
+  if (!session?.user) return false;
+  cloudSyncEnabled = false;
+  activeCloudUserId = session.user.id;
+  const cloud = await loadCloudData(session.user.id);
+  const saved = cloud.progress?.state || {};
+  const profile = cloudProfile(cloud.profile);
+  state.auth = { token:session.access_token, provider:'supabase', userId:session.user.id };
+  state.user = {
+    id: session.user.id,
+    name: cloud.profile?.name || session.user.user_metadata?.name || session.user.email?.split('@')[0] || 'Estudante',
+    email: session.user.email || '',
+    role: 'student',
+    profile
+  };
+  if (saved.tasks) state.tasks = saved.tasks;
+  if (saved.stats) state.stats = saved.stats;
+  if (saved.favorites) state.practiceFavorites = saved.favorites;
+  if (saved.chat) state.chat = saved.chat;
+  if (saved.exam) state.exam = saved.exam;
+  if (saved.lastResult) state.lastResult = saved.lastResult;
+  if (saved.onboarding) state.onboarding = { ...state.onboarding, ...saved.onboarding };
+  state.practiceQuestions = makeQuestionSet(profile.selectedRole, 24);
+  saveState({ syncCloud:false });
+  cloudSyncEnabled = true;
+  return Boolean(cloud.profile?.selected_role || cloud.progress?.state);
+}
+
+async function startGoogleLogin() {
+  try {
+    if (!hasCloudBackend()) throw new Error('O login com Google será liberado assim que o banco online for ativado.');
+    await signInGoogleCloud();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function requestPasswordReset(form) {
+  const error = form.querySelector('#auth-error');
+  try {
+    if (!hasCloudBackend()) throw new Error('A recuperação online ainda não foi ativada.');
+    await sendPasswordResetCloud(form.elements.email.value);
+    toast('Se o e-mail estiver cadastrado, as instruções serão enviadas.');
+    setTimeout(()=>navigate('login'),800);
+  } catch (err) {
+    error.innerHTML = `<div class="form-error">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function submitNewPassword(form) {
+  const error = form.querySelector('#auth-error');
+  try {
+    await updatePasswordCloud(form.elements.password.value);
+    state.passwordRecovery = false;
+    toast('Senha atualizada com sucesso.');
+    navigate('dashboard');
+  } catch (err) {
+    error.innerHTML = `<div class="form-error">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function logoutCurrentUser() {
+  try {
+    if (state.auth?.provider === 'supabase') await signOutCloud();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+  clearTimeout(cloudSyncTimer);
+  cloudSyncEnabled = false;
+  activeCloudUserId = null;
+  state.auth = null;
+  saveState({ syncCloud:false });
+  toast('Sessão encerrada.');
+  navigate('inicio');
+}
+
+async function confirmAccountDeletion() {
+  try {
+    if (state.auth?.provider === 'supabase') await deleteCloudAccount();
+    localStorage.clear();
+    clearTimeout(cloudSyncTimer);
+    cloudSyncEnabled = false;
+    activeCloudUserId = null;
+    state.auth = null;
+    state.modal = null;
+    toast('Conta e histórico removidos.');
+    navigate('inicio');
+  } catch (error) {
+    toast(`Não foi possível excluir a conta: ${error.message}`, 'error');
+  }
+}
+
 function demoLogin(target = 'dashboard') {
+  clearTimeout(cloudSyncTimer);
+  cloudSyncEnabled = false;
+  activeCloudUserId = null;
   state.auth = { token:'demo' };
   state.user = readLocal('aprova_user', defaultUser);
   if (!state.user?.profile) state.user = structuredClone(defaultUser);
@@ -564,7 +732,9 @@ function demoLogin(target = 'dashboard') {
 }
 
 function recordPractice(q, chosen, correct) {
-  if (state.auth?.token !== 'demo') api('/api/answers',{method:'POST',body:JSON.stringify({questionId:q.id,selected:chosen,correct,timeSpent:45,role:roleData().id,subject:q.subject,topic:q.topic,difficulty:q.difficulty,type:'multiple-choice',session:'practice'})}).catch(()=>{});
+  const answer = {questionId:q.id,selected:chosen,correct,timeSpent:45,role:roleData().id,subject:q.subject,topic:q.topic,difficulty:q.difficulty,type:'multiple-choice',session:'practice'};
+  if (state.auth?.provider === 'supabase') recordCloudAnswer(state.user.id, answer).catch(()=>{});
+  else if (state.auth?.provider === 'local') api('/api/answers',{method:'POST',body:JSON.stringify(answer)}).catch(()=>{});
 }
 
 function startExam({ count = 60, seconds = 14400, diagnostic = false, mode = 'multiple' } = {}) {
@@ -661,7 +831,7 @@ document.addEventListener('click', (event) => {
   else if (action === 'close-modal' || (action === 'modal-backdrop' && event.target === el)) { state.modal=null;render(); }
   else if (action === 'demo-login') demoLogin('dashboard');
   else if (action === 'demo-diagnostic') demoLogin('diagnostico');
-  else if (action === 'google-login') toast('O login com Google está preparado para conexão ao provedor OAuth em produção. Use a demonstração agora.');
+  else if (action === 'google-login') startGoogleLogin();
   else if (action === 'select-role') { state.onboarding.selectedRole=el.dataset.role;state.routeAfterAuth='onboarding';navigate('cadastro'); }
   else if (action === 'view-role') { state.onboarding.selectedRole=el.dataset.role;state.user.profile.selectedRole=el.dataset.role;demoLogin('edital'); }
   else if (action === 'onboard-role') { state.onboarding.selectedRole=el.dataset.role;render(); }
@@ -724,9 +894,9 @@ document.addEventListener('click', (event) => {
   else if (action === 'notifications') { state.modal={title:'Notificações',body:`<div class="stack"><div class="review-card"><span class="review-priority"></span><div><h3>3 revisões prioritárias hoje</h3><p>Comece por NOB/SUAS • há 12 min</p></div></div><div class="review-card"><span class="review-priority low"></span><div><h3>Sua precisão melhorou 8%</h3><p>Ótimo avanço nas últimas quatro semanas • ontem</p></div></div><div class="review-card"><span class="review-priority medium"></span><div><h3>Meta semanal em 70%</h3><p>Faltam 54 questões • ontem</p></div></div></div>`};render(); }
   else if (action === 'export-data'||action === 'export-edital') exportData();
   else if (action === 'delete-account') { state.modal={title:'Excluir conta e histórico',body:`<div class="notice notice-danger">${icon('alert')} Esta ação removerá seus dados locais e não poderá ser desfeita.</div><p class="muted" style="margin:16px 0 0">Exporte seus dados antes de continuar, se desejar manter uma cópia.</p>`,footer:`<button class="btn btn-outline" data-action="close-modal">Cancelar</button><button class="btn btn-danger" data-action="confirm-delete">Excluir definitivamente</button>`};render(); }
-  else if (action === 'confirm-delete') { localStorage.clear();state.auth=null;state.modal=null;toast('Conta local e histórico removidos.');navigate('inicio'); }
-  else if (action === 'logout') { state.auth=null;saveState();toast('Sessão encerrada.');navigate('inicio'); }
-  else if (action === 'change-password') toast('Um link de alteração de senha foi enviado ao e-mail cadastrado.');
+  else if (action === 'confirm-delete') confirmAccountDeletion();
+  else if (action === 'logout') logoutCurrentUser();
+  else if (action === 'change-password') { if(state.user?.email) sendPasswordResetCloud(state.user.email).then(()=>toast('Um link de alteração de senha foi enviado ao seu e-mail.')).catch(error=>toast(error.message,'error')); }
   else if (action === 'edit-avatar') toast('Upload de foto disponível na configuração com armazenamento em nuvem.');
   else if (action === 'approve-question' || action === 'reject-question') { el.closest('tr')?.remove();toast(action==='approve-question'?'Questão aprovada e publicada.':'Questão rejeitada e registrada no log.'); }
   else if (action === 'import-edital') { state.modal={title:'Importar conteúdo programático',body:`<div class="notice">${icon('upload')} Envie um PDF ou cole o conteúdo. A importação cria uma nova versão para revisão antes da publicação.</div><div class="form-group" style="margin-top:16px"><label>Arquivo</label><input class="input" type="file" accept=".pdf,.txt,.docx"></div><div class="form-group"><label>Identificação da versão</label><input class="input" value="Edital nº 1/2026 — Retificação nº 3"></div>`,footer:`<button class="btn btn-outline" data-action="close-modal">Cancelar</button><button class="btn btn-primary" data-action="confirm-import">Importar versão</button>`};render(); }
@@ -739,8 +909,9 @@ document.addEventListener('submit', (event) => {
   event.preventDefault();
   const form=event.target;
   if(form.id==='auth-form') submitAuth(form);
-  else if(form.id==='recover-form') { toast('Se o e-mail estiver cadastrado, as instruções serão enviadas.');setTimeout(()=>navigate('login'),800); }
-  else if(form.id==='profile-form') { const data=Object.fromEntries(new FormData(form));state.user.name=data.name;state.user.profile={...state.user.profile,...data,daysPerWeek:Number(data.daysPerWeek),hoursPerDay:Number(data.hoursPerDay),weeklyGoal:Number(data.weeklyGoal)};state.stats.weeklyGoal=Number(data.weeklyGoal);state.practiceQuestions=makeQuestionSet(data.selectedRole,24);saveState();if(state.auth?.token!=='demo')api('/api/profile',{method:'PATCH',body:JSON.stringify({...state.user.profile,name:state.user.name})}).catch(()=>{});toast('Perfil e plano atualizados.');render(); }
+  else if(form.id==='recover-form') requestPasswordReset(form);
+  else if(form.id==='reset-password-form') submitNewPassword(form);
+  else if(form.id==='profile-form') { const data=Object.fromEntries(new FormData(form));state.user.name=data.name;state.user.profile={...state.user.profile,...data,daysPerWeek:Number(data.daysPerWeek),hoursPerDay:Number(data.hoursPerDay),weeklyGoal:Number(data.weeklyGoal)};state.stats.weeklyGoal=Number(data.weeklyGoal);state.practiceQuestions=makeQuestionSet(data.selectedRole,24);saveState();if(state.auth?.provider==='local')api('/api/profile',{method:'PATCH',body:JSON.stringify({...state.user.profile,name:state.user.name})}).catch(()=>{});toast('Perfil e plano atualizados.');render(); }
   else if(form.id==='chat-form') { const input=form.elements.message;const text=input.value.trim();if(!text)return;state.chat.push({from:'user',text});state.chat.push({from:'ai',text:assistantReply(text)});saveState();render(); }
 });
 
@@ -756,4 +927,44 @@ document.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('hashchange', render);
-render();
+
+async function bootstrap() {
+  if (!hasCloudBackend()) {
+    render();
+    return;
+  }
+  try {
+    const session = await getCloudSession();
+    if (session) {
+      const hasPlan = await applyCloudSession(session);
+      if (['inicio','login','cadastro'].includes(getRoute())) navigate(hasPlan ? 'dashboard' : 'onboarding');
+    } else if (state.auth?.provider === 'supabase') {
+      state.auth = null;
+      saveState({ syncCloud:false });
+    }
+    onCloudAuthStateChange(async (event, nextSession) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        state.passwordRecovery = true;
+        if (nextSession) await applyCloudSession(nextSession);
+        navigate('recuperar-senha');
+        return;
+      }
+      if (event === 'SIGNED_IN' && nextSession && nextSession.user.id !== activeCloudUserId) {
+        const hasPlan = await applyCloudSession(nextSession);
+        if (['inicio','login','cadastro'].includes(getRoute())) navigate(hasPlan ? 'dashboard' : 'onboarding');
+      }
+      if (event === 'SIGNED_OUT') {
+        cloudSyncEnabled = false;
+        activeCloudUserId = null;
+        state.auth = null;
+        saveState({ syncCloud:false });
+      }
+    });
+  } catch (error) {
+    console.error('Falha ao iniciar a conta online.', error);
+    toast('Não foi possível sincronizar sua conta agora. Tente novamente em instantes.', 'error');
+  }
+  render();
+}
+
+bootstrap();

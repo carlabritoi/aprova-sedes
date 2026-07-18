@@ -1,5 +1,7 @@
 -- Aprova SEDES — PostgreSQL 16+
--- Modelo de produção. Aplicar em ambiente controlado e revisar políticas RLS.
+-- Modelo relacional completo de referência para evolução da plataforma.
+-- NÃO aplicar este arquivo diretamente no Supabase. Para ativar autenticação,
+-- progresso e RLS, use supabase/migrations/202607170001_auth_and_progress.sql.
 create extension if not exists pgcrypto;
 
 create type user_role as enum ('student', 'content_reviewer', 'admin', 'super_admin');

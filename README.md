@@ -55,10 +55,22 @@ A conferência realizada em 16/07/2026 identificou prova objetiva de múltipla e
 
 ## Publicação e produção
 
-O frontend demonstrativo é publicado gratuitamente pelo GitHub Pages a cada envio para a branch `main`. Cadastro com contas reais e sincronização entre dispositivos exigem conectar:
+O frontend é publicado gratuitamente pelo GitHub Pages a cada envio para a branch `main`. A integração com Supabase oferece cadastro por e-mail, confirmação de conta, recuperação de senha e sincronização do progresso entre dispositivos.
 
-1. PostgreSQL ou Supabase usando `database/schema.sql`;
-2. autenticação Google e confirmação/recuperação por e-mail;
+### Ativar o Supabase
+
+1. No painel do projeto, abra **SQL Editor** e escolha **New query**.
+2. Copie todo o conteúdo de `supabase/migrations/202607170001_auth_and_progress.sql`.
+3. Cole no editor e clique em **Run**. O script cria as tabelas e ativa as políticas que isolam os dados de cada usuário.
+4. Em **Authentication → URL Configuration**, use `https://carlabritoi.github.io/aprova-sedes/` como Site URL e Redirect URL.
+5. Para excluir contas pela plataforma, publique `supabase/functions/delete-account` como Edge Function.
+
+A chave `sb_publishable_...` pode ficar no frontend porque as tabelas usam RLS. Nunca exponha a chave secreta ou `service_role` no navegador, no GitHub ou em mensagens.
+
+Para a evolução completa ainda será necessário conectar:
+
+1. as tabelas normalizadas do modelo completo em `database/schema.sql`;
+2. autenticação Google no provedor OAuth do Supabase;
 3. armazenamento de arquivos e backups;
 4. provedor de IA no servidor, com fila e validação antes da publicação;
 5. monitor de atualização do edital e da legislação;
