@@ -2,6 +2,8 @@
 
 Plataforma web responsiva para preparação do concurso SEDES/DF, Edital nº 1/2026, com foco inicial nos cargos 202 (TDAS — Técnico Administrativo) e 405 (EDAS — Educador Social).
 
+**Site público:** [https://carlabritoi.github.io/aprova-sedes/](https://carlabritoi.github.io/aprova-sedes/)
+
 ## O que já funciona
 
 - landing page responsiva, clara e acessível;
@@ -51,9 +53,9 @@ start.ps1          Inicialização no Windows
 
 A conferência realizada em 16/07/2026 identificou prova objetiva de múltipla escolha com cinco alternativas, 60 questões, 100 pontos e duração conjunta de 4 horas com a discursiva. O sistema mantém aviso para conferir normas em fontes oficiais antes da publicação definitiva de questões.
 
-## Produção e endereço público
+## Publicação e produção
 
-O frontend está pronto para hospedagem, mas uma publicação pública com contas reais exige conectar:
+O frontend demonstrativo é publicado gratuitamente pelo GitHub Pages a cada envio para a branch `main`. Cadastro com contas reais e sincronização entre dispositivos exigem conectar:
 
 1. PostgreSQL ou Supabase usando `database/schema.sql`;
 2. autenticação Google e confirmação/recuperação por e-mail;
@@ -71,4 +73,3 @@ O pipeline deve executar geração, checagem de aderência ao edital, verificaç
 ## Aviso
 
 Projeto educacional independente, sem vínculo oficial com a SEDES/DF ou o Instituto Quadrix. A plataforma oferece preparação estratégica e não promete aprovação.
-
